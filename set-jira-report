@@ -1,0 +1,429 @@
+
+/**
+ * Creates a Jira report from "Ashley-Works" in "Jira Tickets".
+ * Run createJiraTicketsReport() to refresh the report.
+ */
+
+function createJiraTicketsReport() {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const sourceSheet = spreadsheet.getSheetByName("Ashley-Works");
+  const reportSheetName = "Jira Tickets";
+
+  if (!sourceSheet) {
+    throw new Error('Source sheet "Ashley-Works" was not found.');
+  }
+
+  const sourceData = sourceSheet.getDataRange().getValues();
+
+  if (sourceData.length < 2) {
+    throw new Error('No ticket data was found in "Ashley-Works".');
+  }
+
+  const sourceHeaders = sourceData[0];
+
+  const columns = {
+    issueKey: findColumn(sourceHeaders, "Issue key"),
+    summary: findColumn(sourceHeaders, "Summary"),
+    status: findColumn(sourceHeaders, "Status"),
+    created: findColumn(sourceHeaders, "Created"),
+    startDate: findColumn(sourceHeaders, "Custom field (Start date)"),
+    dueDate: findColumn(sourceHeaders, "Due date"),
+    assignees: findAllColumns(
+      sourceHeaders,
+      "Custom field (Ticket Assignee)"
+    ),
+    endDates: findAllColumns(
+      sourceHeaders,
+      "Custom field (End Date)"
+    ),
+    accounts: findAllColumns(
+      sourceHeaders,
+      "Custom field (Account Name)"
+    )
+  };
+
+  const requiredColumns = [
+    "issueKey",
+    "summary",
+    "status",
+    "created"
+  ];
+
+  const missingColumns = requiredColumns.filter(
+    name => columns[name] === -1
+  );
+
+  if (missingColumns.length > 0) {
+    throw new Error(
+      "Missing required source columns: " +
+      missingColumns.join(", ")
+    );
+  }
+
+  const ticketsByKey = {};
+
+  // Combine source rows belonging to the same Jira ticket.
+  for (let rowIndex = 1; rowIndex < sourceData.length; rowIndex++) {
+    const row = sourceData[rowIndex];
+    const issueKey = getCell(row, columns.issueKey);
+
+    if (!issueKey) continue;
+
+    if (!ticketsByKey[issueKey]) {
+      ticketsByKey[issueKey] = {
+        issueKey: issueKey,
+        created: "",
+        summary: "",
+        status: "",
+        qa: [],
+        be: [],
+        fe: [],
+        uiux: [],
+        startDate: "",
+        dueDate: "",
+        endDate: "",
+        accounts: []
+      };
+    }
+
+    const ticket = ticketsByKey[issueKey];
+
+    ticket.created = chooseEarlierDate(
+      ticket.created,
+      parseDate(getCell(row, columns.created))
+    );
+
+    ticket.startDate = chooseEarlierDate(
+      ticket.startDate,
+      parseDate(getCell(row, columns.startDate))
+    );
+
+    ticket.dueDate = chooseEarlierDate(
+      ticket.dueDate,
+      parseDate(getCell(row, columns.dueDate))
+    );
+
+    // Combine all End Date columns.
+    columns.endDates.forEach(columnIndex => {
+      const endDateValues = getCell(row, columnIndex).split(";");
+
+      endDateValues.forEach(value => {
+        ticket.endDate = chooseLaterDate(
+          ticket.endDate,
+          parseDate(value.trim())
+        );
+      });
+    });
+
+    if (!ticket.summary) {
+      ticket.summary = cleanSummary(
+        getCell(row, columns.summary)
+      );
+    }
+
+    // Prefer In Progress if any source row has that status.
+    const rowStatus = simplifyStatus(
+      getCell(row, columns.status)
+    );
+
+    if (rowStatus === "In Progress" || !ticket.status) {
+      ticket.status = rowStatus;
+    }
+
+    // Read all Ticket Assignee columns.
+    columns.assignees.forEach(columnIndex => {
+      const assigneeText = getCell(row, columnIndex);
+      const assigneePattern = /\[(QA|BE|FE|UI\/UX)\]_([^;]+)/gi;
+
+      let match;
+
+      while ((match = assigneePattern.exec(assigneeText)) !== null) {
+        const role = match[1].toUpperCase();
+        const name = match[2].trim();
+
+        if (!name) continue;
+
+        const roleColumn = {
+          QA: ticket.qa,
+          BE: ticket.be,
+          FE: ticket.fe,
+          "UI/UX": ticket.uiux
+        }[role];
+
+        addUnique(roleColumn, name);
+      }
+    });
+
+    // Read all Account Name columns.
+    columns.accounts.forEach(columnIndex => {
+      getCell(row, columnIndex)
+        .split(";")
+        .forEach(account => {
+          addUnique(ticket.accounts, account.trim());
+        });
+    });
+  }
+
+  // Define the status priority.
+  const statusOrder = {
+    "In Progress": 1,
+    "Open": 2,
+    "Delivery Phase": 3,
+    "Final Checking": 4,
+    "Done": 5,
+    "Closed": 6,
+    "Cancelled": 7,
+    "On Hold": 9
+  };
+
+  const tickets = Object.values(ticketsByKey);
+
+  // Sort by status priority, then Due Date (newest to oldest).
+  // On Hold will always appear at the very bottom.
+  tickets.sort((first, second) => {
+    const firstStatus = statusOrder[first.status] || 8;
+    const secondStatus = statusOrder[second.status] || 8;
+
+    if (firstStatus !== secondStatus) {
+      return firstStatus - secondStatus;
+    }
+
+    const firstDueDate = first.dueDate
+      ? first.dueDate.getTime()
+      : 0;
+
+    const secondDueDate = second.dueDate
+      ? second.dueDate.getTime()
+      : 0;
+
+    return secondDueDate - firstDueDate;
+  });
+
+  const headers = [
+    "Date Created",
+    "Summary/Title",
+    "Link Reference",
+    "Status",
+    "QA",
+    "BE",
+    "FE",
+    "UI/UX",
+    "Start Date",
+    "Due Date",
+    "End Date",
+    "Account"
+  ];
+
+  const reportRows = tickets.map(ticket => [
+    ticket.created,
+    ticket.summary,
+    ticket.issueKey,
+    ticket.status,
+    ticket.qa.join("; "),
+    ticket.be.join("; "),
+    ticket.fe.join("; "),
+    ticket.uiux.join("; "),
+    ticket.startDate,
+    ticket.dueDate,
+    ticket.endDate,
+    ticket.accounts.join("; ")
+  ]);
+
+  let reportSheet = spreadsheet.getSheetByName(reportSheetName);
+
+  if (!reportSheet) {
+    reportSheet = spreadsheet.insertSheet(reportSheetName);
+  }
+
+  // Clear old cell contents only.
+  // Existing formatting is not cleared or reset.
+  const previousLastRow = reportSheet.getLastRow();
+
+  if (previousLastRow > 0) {
+    reportSheet
+      .getRange(1, 1, previousLastRow, headers.length)
+      .clearContent();
+  }
+
+  // Write the report headers.
+  reportSheet
+    .getRange(1, 1, 1, headers.length)
+    .setValues([headers]);
+
+  // Write the ticket data.
+  if (reportRows.length > 0) {
+    reportSheet
+      .getRange(2, 1, reportRows.length, headers.length)
+      .setValues(reportRows);
+
+    // Create Jira hyperlinks without changing cell formatting.
+    const jiraBaseUrl =
+      "https://glophics-team-tejd16ze.atlassian.net/browse/";
+
+    const linkFormulas = reportRows.map(row => {
+      const issueKey = row[2];
+
+      if (/^(GLOP-\d+|GU-\d+)$/i.test(issueKey)) {
+        return [
+          '=HYPERLINK("' +
+          jiraBaseUrl + issueKey +
+          '","' + issueKey + '")'
+        ];
+      }
+
+      return [issueKey || ""];
+    });
+
+    reportSheet
+      .getRange(2, 3, linkFormulas.length, 1)
+      .setValues(linkFormulas.map(row => [row[0]]));
+  }
+}
+
+
+/**
+ * Creates three daily triggers for the report.
+ * Run this function manually once to activate the schedule.
+ */
+function createJiraTicketsReportTriggers() {
+  const functionName = "createJiraTicketsReport";
+  const scheduledHours = [0, 9, 16];
+
+  // Remove existing triggers for this report to avoid duplicates.
+  ScriptApp.getProjectTriggers().forEach(trigger => {
+    if (trigger.getHandlerFunction() === functionName) {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+
+  // Create one daily trigger for each scheduled hour.
+  scheduledHours.forEach(hour => {
+    ScriptApp.newTrigger(functionName)
+      .timeBased()
+      .everyDays(1)
+      .atHour(hour)
+      .create();
+  });
+}
+
+
+/** Finds the first column matching a header name. */
+function findColumn(headers, name) {
+  return headers.findIndex(
+    header =>
+      String(header).trim().toLowerCase() === name.toLowerCase()
+  );
+}
+
+
+/** Finds every column matching a repeated header name. */
+function findAllColumns(headers, name) {
+  const matchingColumns = [];
+
+  headers.forEach((header, index) => {
+    if (
+      String(header).trim().toLowerCase() === name.toLowerCase()
+    ) {
+      matchingColumns.push(index);
+    }
+  });
+
+  return matchingColumns;
+}
+
+
+/** Returns a cell's text, or blank if the column or value is missing. */
+function getCell(row, columnIndex) {
+  if (columnIndex === -1 || columnIndex === undefined) {
+    return "";
+  }
+
+  const value = row[columnIndex];
+
+  return value === null || value === undefined
+    ? ""
+    : String(value).trim();
+}
+
+
+/** Converts a date value to a date without a time. */
+function parseDate(value) {
+  if (!value) return "";
+
+  const date = value instanceof Date
+    ? new Date(value)
+    : new Date(value);
+
+  if (isNaN(date.getTime())) return "";
+
+  return new Date(
+    date.getFullYear(),
+    date.getMonth(),
+    date.getDate()
+  );
+}
+
+
+/** Keeps the earlier date when combining rows. */
+function chooseEarlierDate(currentDate, newDate) {
+  if (!newDate) return currentDate || "";
+
+  if (!currentDate || newDate < currentDate) {
+    return newDate;
+  }
+
+  return currentDate;
+}
+
+
+/** Keeps the later date when combining rows. */
+function chooseLaterDate(currentDate, newDate) {
+  if (!newDate) return currentDate || "";
+
+  if (!currentDate || newDate > currentDate) {
+    return newDate;
+  }
+
+  return currentDate;
+}
+
+
+/** Adds a non-empty value only if it is not already in the list. */
+function addUnique(values, value) {
+  if (value && !values.includes(value)) {
+    values.push(value);
+  }
+}
+
+
+/** Combines detailed Jira statuses into the report's simpler status. */
+function simplifyStatus(status) {
+  if (!status) return "";
+
+  const statusesCountedAsInProgress = [
+    "In Progress",
+    "To Review",
+    "QA Failed",
+    "Live Deployment",
+    "QA Testing (Stg)",
+    "QA Testing (Dev)",
+    "QA Testing (Live)"
+  ];
+
+  const isInProgress = statusesCountedAsInProgress.some(
+    name => status.toLowerCase().includes(name.toLowerCase())
+  );
+
+  return isInProgress ? "In Progress" : status.trim();
+}
+
+
+/** Removes common project prefixes from ticket titles. */
+function cleanSummary(summary) {
+  if (!summary) return "";
+
+  return summary
+    .replace(/^Musticker Development\s*\|\s*/i, "")
+    .replace(/^Musticker\s*\|\s*/i, "")
+    .trim();
+}

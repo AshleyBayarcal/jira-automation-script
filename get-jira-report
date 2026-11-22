@@ -1,0 +1,279 @@
+function testJiraConnection() {
+  const jiraBaseUrl =
+    "https://glophics-team-tejd16ze.atlassian.net";
+
+  const scriptProperties =
+    PropertiesService.getScriptProperties();
+
+  const jiraEmail =
+    scriptProperties.getProperty("JIRA_EMAIL");
+
+  const jiraApiToken =
+    scriptProperties.getProperty("JIRA_API_TOKEN");
+
+  if (!jiraEmail || !jiraApiToken) {
+    throw new Error(
+      "Please set JIRA_EMAIL and JIRA_API_TOKEN in Script Properties."
+    );
+  }
+
+  const encodedCredentials =
+    Utilities.base64Encode(
+      jiraEmail + ":" + jiraApiToken
+    );
+
+  const requestOptions = {
+    method: "get",
+    headers: {
+      Authorization: "Basic " + encodedCredentials,
+      Accept: "application/json"
+    },
+    muteHttpExceptions: true
+  };
+
+  const response = UrlFetchApp.fetch(
+    jiraBaseUrl + "/rest/api/3/myself",
+    requestOptions
+  );
+
+  Logger.log(
+    "Connection HTTP Status: " +
+    response.getResponseCode()
+  );
+
+  if (response.getResponseCode() !== 200) {
+    Logger.log(response.getContentText());
+    throw new Error(
+      "Jira authentication failed. Check your email, API token, and account access."
+    );
+  }
+
+  Logger.log("Jira authentication successful.");
+}
+
+
+function testJiraFilter10108() {
+  const jiraBaseUrl =
+    "https://glophics-team-tejd16ze.atlassian.net";
+
+  const filterId = "10108";
+
+  const scriptProperties =
+    PropertiesService.getScriptProperties();
+
+  const jiraEmail =
+    scriptProperties.getProperty("JIRA_EMAIL");
+
+  const jiraApiToken =
+    scriptProperties.getProperty("JIRA_API_TOKEN");
+
+  if (!jiraEmail || !jiraApiToken) {
+    throw new Error(
+      "Please set JIRA_EMAIL and JIRA_API_TOKEN in Script Properties."
+    );
+  }
+
+  const encodedCredentials =
+    Utilities.base64Encode(
+      jiraEmail + ":" + jiraApiToken
+    );
+
+  const requestOptions = {
+    method: "get",
+    headers: {
+      Authorization: "Basic " + encodedCredentials,
+      Accept: "application/json"
+    },
+    muteHttpExceptions: true
+  };
+
+  const response = UrlFetchApp.fetch(
+    jiraBaseUrl + "/rest/api/3/filter/" + filterId,
+    requestOptions
+  );
+
+  const responseStatus = response.getResponseCode();
+  const responseText = response.getContentText();
+
+  Logger.log("Filter HTTP Status: " + responseStatus);
+
+  if (responseStatus !== 200) {
+    Logger.log(responseText);
+    throw new Error(
+      "Unable to retrieve Filter 10108. Check the filter permissions and API response."
+    );
+  }
+
+  const filterDetails = JSON.parse(responseText);
+
+  Logger.log("Filter ID: " + filterDetails.id);
+  Logger.log("Filter Name: " + filterDetails.name);
+  Logger.log("Filter JQL: " + filterDetails.jql);
+  Logger.log("Filter access successful.");
+}
+
+// Checks the active fields/columns retrieved by Filter 10111 from JIRA
+function inspectMustickerJiraFields() {
+  const jiraBaseUrl =
+    "https://glophics-team-tejd16ze.atlassian.net";
+
+  const scriptProperties =
+    PropertiesService.getScriptProperties();
+
+  const jiraEmail =
+    scriptProperties.getProperty("JIRA_EMAIL");
+
+  const jiraApiToken =
+    scriptProperties.getProperty("JIRA_API_TOKEN");
+
+  const encodedCredentials =
+    Utilities.base64Encode(
+      jiraEmail + ":" + jiraApiToken
+    );
+
+  const requestOptions = {
+    method: "get",
+    headers: {
+      Authorization: "Basic " + encodedCredentials,
+      Accept: "application/json"
+    },
+    muteHttpExceptions: true
+  };
+
+  // Retrieve the filter's JQL.
+  const filterResponse = UrlFetchApp.fetch(
+    jiraBaseUrl + "/rest/api/3/filter/10111",
+    requestOptions
+  );
+
+  if (filterResponse.getResponseCode() !== 200) {
+    throw new Error(
+      "Unable to retrieve Filter 10111: " +
+      filterResponse.getContentText()
+    );
+  }
+
+  const filterDetails =
+    JSON.parse(filterResponse.getContentText());
+
+  Logger.log("FILTER NAME: " + filterDetails.name);
+  Logger.log("FILTER JQL: " + filterDetails.jql);
+
+  // Retrieve available Jira fields.
+  const fieldsResponse = UrlFetchApp.fetch(
+    jiraBaseUrl + "/rest/api/3/field",
+    requestOptions
+  );
+
+  if (fieldsResponse.getResponseCode() !== 200) {
+    throw new Error(
+      "Unable to retrieve Jira fields: " +
+      fieldsResponse.getContentText()
+    );
+  }
+
+  const jiraFields =
+    JSON.parse(fieldsResponse.getContentText());
+
+  Logger.log("MATCHING JIRA FIELD IDS:");
+
+  jiraFields.forEach(function(field) {
+    if (
+      /ticket assignee|end date|account name|start date/i
+        .test(field.name)
+    ) {
+      Logger.log(
+        "Field ID: " + field.id +
+        " | Field Name: " + field.name
+      );
+    }
+  });
+}
+
+//Check if it can retrieve 3 tickets from the Filter/JQL
+function inspectMustickerSampleTickets() {
+  const jiraBaseUrl =
+    "https://glophics-team-tejd16ze.atlassian.net";
+
+  const scriptProperties =
+    PropertiesService.getScriptProperties();
+
+  const jiraEmail =
+    scriptProperties.getProperty("JIRA_EMAIL");
+
+  const jiraApiToken =
+    scriptProperties.getProperty("JIRA_API_TOKEN");
+
+  if (!jiraEmail || !jiraApiToken) {
+    throw new Error(
+      "Missing Jira credentials in Script Properties."
+    );
+  }
+
+  const encodedCredentials =
+    Utilities.base64Encode(
+      jiraEmail + ":" + jiraApiToken
+    );
+
+  const jql =
+    'project = GLOP AND "account name[labels]" = Musticker ' +
+    "ORDER BY created DESC";
+
+  const fields = [
+    "summary",
+    "status",
+    "created",
+    "duedate",
+    "reporter",
+    "customfield_10015",
+    "customfield_10138",
+    "customfield_10241",
+    "customfield_10072",
+    "customfield_10242",
+    "customfield_10204",
+    "customfield_10206",
+    "customfield_10240"
+  ];
+
+  const requestUrl =
+    jiraBaseUrl +
+    "/rest/api/3/search/jql" +
+    "?jql=" + encodeURIComponent(jql) +
+    "&fields=" + encodeURIComponent(fields.join(",")) +
+    "&maxResults=3";
+
+  const response = UrlFetchApp.fetch(requestUrl, {
+    method: "get",
+    headers: {
+      Authorization: "Basic " + encodedCredentials,
+      Accept: "application/json"
+    },
+    muteHttpExceptions: true
+  });
+
+  const statusCode = response.getResponseCode();
+  const responseText = response.getContentText();
+
+  Logger.log("HTTP STATUS: " + statusCode);
+
+  if (statusCode !== 200) {
+    Logger.log(responseText);
+    throw new Error(
+      "Unable to retrieve sample tickets from Jira."
+    );
+  }
+
+  const result = JSON.parse(responseText);
+
+  Logger.log(
+    "SAMPLE TICKET COUNT: " + result.issues.length
+  );
+
+  result.issues.forEach(function(issue) {
+    Logger.log(
+      "ISSUE KEY: " + issue.key +
+      "\nFIELDS: " +
+      JSON.stringify(issue.fields, null, 2)
+    );
+  });
+}
